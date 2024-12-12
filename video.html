@@ -156,6 +156,7 @@
 
         // Function to start a video call with a partner
         function startVideoCall(partnerId) {
+            console.log("Starting video call...");
             peerConnection = new RTCPeerConnection({ iceServers });
 
             // When the ICE candidate is found, push it to Firebase
@@ -167,6 +168,7 @@
 
             // On remote stream, display it
             peerConnection.ontrack = (event) => {
+                console.log("Remote stream received");
                 remoteStream = event.streams[0];
                 remoteVideo.srcObject = remoteStream;
             };
@@ -210,6 +212,7 @@
         onChildAdded(ref(database, `chatRooms/${chatRoomId}/iceCandidates`), (snapshot) => {
             const candidate = snapshot.val();
             if (candidate) {
+                console.log("Adding ICE candidate:", candidate);
                 peerConnection.addIceCandidate(new RTCIceCandidate(candidate.candidate));
             }
         });
@@ -218,6 +221,7 @@
             const sdpData = snapshot.val();
             if (sdpData.senderId !== userId) {
                 const sdp = new RTCSessionDescription(sdpData.sdp);
+                console.log("Setting remote SDP:", sdp);
                 if (sdp.type === 'offer') {
                     peerConnection.setRemoteDescription(sdp)
                         .then(() => peerConnection.createAnswer())
