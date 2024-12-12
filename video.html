@@ -30,6 +30,8 @@
         const userRef = ref(database, `users/${userId}`);
 
         let chatRoomId = null;
+        let localStream = null;
+        let pc = null;
 
         // WebRTC configuration
         const servers = {
@@ -43,9 +45,6 @@
                 }
             ]
         };
-
-        let localStream = null;
-        let pc = null;
 
         set(userRef, { username, paired: false });
         onDisconnect(userRef).remove();
