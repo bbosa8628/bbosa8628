@@ -2,291 +2,156 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
-        import { getDatabase, ref, set, onValue, push, onDisconnect, runTransaction, onChildAdded } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
-
-        const firebaseConfig = {
-            apiKey: "AIzaSyCFMg0r23SD663cpLkLd0xteZaWC-D3UxU",
-            authDomain: "groupchat-2e3a5.firebaseapp.com",
-            databaseURL: "https://groupchat-2e3a5-default-rtdb.firebaseio.com",
-            projectId: "groupchat-2e3a5",
-            storageBucket: "groupchat-2e3a5.appspot.com",
-            messagingSenderId: "991803460047",
-            appId: "1:991803460047:web:51d3b785656708842faaba",
-            measurementId: "G-F4T57W4HB8"
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const database = getDatabase(app);
-
-        const usersRef = ref(database, 'users');
-        const chatRoomsRef = ref(database, 'chatRooms');
-
-        let username = `Stranger_${Math.floor(Math.random() * 10000)}`;
-        const userId = `${username}_${Date.now()}`;
-        const userRef = ref(database, `users/${userId}`);
-
-        let chatRoomId = null;
-        let localStream = null;
-        let peerConnection = null;
-        let remoteStream = null;
-        
-        const iceServers = [
-            { urls: 'stun:stun.services.mozilla.com' },
-            { urls: 'stun:stun.l.google.com:19302' }
-        ];
-
-        // Firebase initialization
-        set(userRef, { username, paired: false });
-        onDisconnect(userRef).remove();
-
-        // Video elements
-        const localVideo = document.getElementById('localVideo');
-        const remoteVideo = document.getElementById('remoteVideo');
-        
-        // Function to show video feed
-        function showMyFace() {
-            navigator.mediaDevices.getUserMedia({ audio: true, video: true })
-                .then(stream => {
-                    localStream = stream;
-                    localVideo.srcObject = stream;
-                })
-                .catch(error => console.log('Error accessing webcam:', error));
-        }
-
-        // Function to search for a partner
-        function searchForPartner() {
-            console.log("Searching for a partner...");
-
-            runTransaction(usersRef, (users) => {
-                if (!users) users = {};
-                const availableUsers = Object.entries(users).filter(([key, user]) => !user.paired && key !== userId);
-
-                if (availableUsers.length > 0) {
-                    const [partnerId, partner] = availableUsers[Math.floor(Math.random() * availableUsers.length)];
-                    chatRoomId = `chat_${userId}_${partnerId}`;
-
-                    users[userId] = { username, paired: true, chatRoomId };
-                    users[partnerId] = { ...partner, paired: true, chatRoomId };
-
-                    set(ref(database, `chatRooms/${chatRoomId}`), { users: [userId, partnerId] });
-
-                    // Notify both participants
-                    push(ref(database, `chatRooms/${chatRoomId}/messages`), {
-                        username: "System",
-                        text: `You have been matched with ${partner.username}. Start chatting!`,
-                        timestamp: Date.now()
-                    });
-
-                    console.log(`Connected with ${partner.username}. Start chatting!`);
-                    listenToChatRoom();
-                    startVideoCall(partnerId);
-                }
-
-                return users;
-            });
-        }
-
-        // Function to listen to messages in the chat room
-        function listenToChatRoom() {
-            if (!chatRoomId) return;
-
-            const chatRoomRef = ref(database, `chatRooms/${chatRoomId}/messages`);
-            onChildAdded(chatRoomRef, (snapshot) => {
-                const message = snapshot.val();
-                displayMessage(snapshot.key, message);
-            });
-        }
-
-        // Function to display messages in the chat room
-        function displayMessage(messageId, message) {
-            const chatDiv = document.getElementById('chat');
-            const existingMessage = document.querySelector(`[data-message-id="${messageId}"]`);
-            if (existingMessage) return;
-
-            const messageElement = document.createElement('div');
-            messageElement.dataset.messageId = messageId;
-
-            const usernameSpan = document.createElement('span');
-            usernameSpan.textContent = `${message.username}: `;
-            usernameSpan.style.color = message.username === username ? 'red' : 'green';
-
-            const messageContent = document.createElement('span');
-            messageContent.textContent = message.text;
-
-            messageElement.appendChild(usernameSpan);
-            messageElement.appendChild(messageContent);
-
-            chatDiv.appendChild(messageElement);
-            chatDiv.scrollTop = chatDiv.scrollHeight;
-        }
-
-        // Function to send a message
-        function sendMessage() {
-            const messageInput = document.getElementById('messageInput');
-            const messageText = messageInput.value.trim();
-
-            if (messageText && chatRoomId) {
-                const chatRoomRef = ref(database, `chatRooms/${chatRoomId}/messages`);
-                push(chatRoomRef, {
-                    username,
-                    text: messageText,
-                    timestamp: Date.now()
-                });
-
-                messageInput.value = '';
-            }
-        }
-
-        // Function to handle ending the chat
-        function endChat() {
-            if (!chatRoomId) return;
-
-            const chatRoomRef = ref(database, `chatRooms/${chatRoomId}/messages`);
-            push(chatRoomRef, {
-                username: "System",
-                text: `${username} has left the chat.`,
-                timestamp: Date.now()
-            });
-
-            location.reload();
-        }
-
-        // Function to start a video call with a partner
-        function startVideoCall(partnerId) {
-            console.log("Starting video call...");
-            peerConnection = new RTCPeerConnection({ iceServers });
-
-            // When the ICE candidate is found, push it to Firebase
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    sendIceCandidate(event.candidate);
-                }
-            };
-
-            // On remote stream, display it
-            peerConnection.ontrack = (event) => {
-                console.log("Remote stream received");
-                remoteStream = event.streams[0];
-                remoteVideo.srcObject = remoteStream;
-            };
-
-            // Add local stream to peer connection
-            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-
-            // Create an offer and set it to local description
-            peerConnection.createOffer()
-                .then(offer => peerConnection.setLocalDescription(offer))
-                .then(() => {
-                    sendSDP(offer, partnerId);
-                })
-                .catch(error => console.log('Error creating offer:', error));
-        }
-
-        // Function to send ICE candidates to Firebase
-        function sendIceCandidate(candidate) {
-            push(ref(database, `chatRooms/${chatRoomId}/iceCandidates`), {
-                candidate: candidate,
-                timestamp: Date.now()
-            });
-        }
-
-        // Function to send SDP offer/answer to Firebase
-        function sendSDP(sdp, partnerId) {
-            push(ref(database, `chatRooms/${chatRoomId}/sdp`), {
-                sdp: sdp,
-                senderId: userId,
-                timestamp: Date.now()
-            });
-        }
-
-        // Initialize the app and start video
-        window.onload = () => {
-            showMyFace();
-            searchForPartner();
-        };
-
-        // Firebase event listeners for ICE candidates and SDP
-        onChildAdded(ref(database, `chatRooms/${chatRoomId}/iceCandidates`), (snapshot) => {
-            const candidate = snapshot.val();
-            if (candidate) {
-                console.log("Adding ICE candidate:", candidate);
-                peerConnection.addIceCandidate(new RTCIceCandidate(candidate.candidate));
-            }
-        });
-
-        onChildAdded(ref(database, `chatRooms/${chatRoomId}/sdp`), (snapshot) => {
-            const sdpData = snapshot.val();
-            if (sdpData.senderId !== userId) {
-                const sdp = new RTCSessionDescription(sdpData.sdp);
-                console.log("Setting remote SDP:", sdp);
-                if (sdp.type === 'offer') {
-                    peerConnection.setRemoteDescription(sdp)
-                        .then(() => peerConnection.createAnswer())
-                        .then(answer => peerConnection.setLocalDescription(answer))
-                        .then(() => {
-                            sendSDP(answer, sdpData.senderId);
-                        });
-                } else if (sdp.type === 'answer') {
-                    peerConnection.setRemoteDescription(sdp);
-                }
-            }
-        });
-
-    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Random Video Chat</title>
+    <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.17.0.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
-            background-color: #333;
-            color: white;
-            margin: 0;
-            padding: 0;
             display: flex;
             flex-direction: column;
+            align-items: center;
+            justify-content: center;
             height: 100vh;
+            margin: 0;
         }
-        #chat {
-            flex-grow: 1;
-            overflow-y: auto;
-            padding: 10px;
-            border: 1px solid #444;
-            background-color: #111;
+        video {
+            width: 300px;
+            height: 200px;
+            margin: 10px;
+            border: 1px solid #ccc;
+            background: #000;
         }
-        #localVideo, #remoteVideo {
-            width: 48%;
-            margin: 1%;
-            border: 1px solid #444;
+        #controls {
+            margin-top: 20px;
         }
-        #messageBox {
-            display: flex;
-            padding: 10px;
-            background-color: #222;
-            border-top: 1px solid #444;
-        }
-        #messageBox input {
-            flex-grow: 1;
-            padding: 10px;
-            background-color: #333;
-            color: white;
-        }
-        #messageBox button {
-            padding: 10px;
-            background-color: #444;
-            color: white;
+        button {
+            margin: 5px;
+            padding: 10px 20px;
+            font-size: 16px;
         }
     </style>
 </head>
 <body>
-    <div id="chat"></div>
-    <video id="localVideo" autoplay muted></video>
-    <video id="remoteVideo" autoplay></video>
-
-    <div id="messageBox">
-        <input type="text" id="messageInput" placeholder="Type a message..." />
-        <button onclick="sendMessage()">Send</button>
-        <button onclick="endChat()">End Chat</button>
+    <h1>Random Video Chat</h1>
+    <video id="local-video" autoplay muted></video>
+    <video id="remote-video" autoplay></video>
+    <div id="controls">
+        <button id="start-call">Start Call</button>
+        <button id="leave-call" disabled>Leave Call</button>
     </div>
+    <script>
+        const APP_ID = "060dcbbfb2d4446886f5fa8310e6995c"; // Replace with your Agora App ID
+const CHANNEL_NAME = "bbosa8628"; // Channel name for random connections
+const TEMP_TOKEN = null; // Replace with a token if your project is secured
+
+let client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+let localTracks = {};
+let remoteTracks = {};
+
+// Start the call
+document.getElementById("start-call").onclick = async () => {
+    try {
+        console.log("Joining channel...");
+        const uid = await client.join(APP_ID, CHANNEL_NAME, TEMP_TOKEN, null);
+        console.log(`Joined channel as UID: ${uid}`);
+
+        console.log("Creating local tracks...");
+        const [audioTrack, videoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
+        localTracks.audioTrack = audioTrack;
+        localTracks.videoTrack = videoTrack;
+
+        // Ensure video is being played
+        console.log("Playing local video...");
+        const localVideo = document.getElementById("local-video");
+        videoTrack.play(localVideo);
+
+        // Check if the video track is available and playing
+        if (!videoTrack) {
+            console.error("Error: Video track is not available");
+        } else {
+            console.log("Local video is being played.");
+        }
+
+        console.log("Publishing local tracks...");
+        await client.publish([audioTrack, videoTrack]);
+        console.log("Local tracks published.");
+
+        // Update UI
+        document.getElementById("start-call").disabled = true;
+        document.getElementById("leave-call").disabled = false;
+
+    } catch (error) {
+        console.error("Error joining channel or initializing tracks:", error);
+    }
+};
+
+// Handle remote user-published event
+client.on("user-published", async (user, mediaType) => {
+    console.log(`User published: ${user.uid}, mediaType: ${mediaType}`);
+
+    try {
+        console.log(`Subscribing to user: ${user.uid}...`);
+        await client.subscribe(user, mediaType);
+        console.log(`Subscribed to user: ${user.uid}`);
+
+        if (mediaType === "video") {
+            // Ensure remote video track is being played
+            console.log(`Playing remote video for user: ${user.uid}`);
+            const remoteVideo = document.getElementById("remote-video");
+            remoteTracks[user.uid] = user.videoTrack;
+            user.videoTrack.play(remoteVideo);
+
+            // Check if the remote video track is available
+            if (!user.videoTrack) {
+                console.error("Error: Remote video track is not available");
+            } else {
+                console.log("Remote video is being played.");
+            }
+        }
+
+        if (mediaType === "audio") {
+            console.log(`Playing remote audio for user: ${user.uid}`);
+            remoteTracks[user.uid] = user.audioTrack;
+            user.audioTrack.play();
+        }
+    } catch (error) {
+        console.error("Error subscribing to user:", error);
+    }
+});
+
+// Handle user-unpublished event
+client.on("user-unpublished", (user) => {
+    console.log(`User unpublished: ${user.uid}`);
+    if (remoteTracks[user.uid]) {
+        remoteTracks[user.uid].stop();
+        delete remoteTracks[user.uid];
+    }
+});
+
+// Leave the call
+document.getElementById("leave-call").onclick = async () => {
+    try {
+        console.log("Stopping local tracks...");
+        if (localTracks.audioTrack) localTracks.audioTrack.close();
+        if (localTracks.videoTrack) localTracks.videoTrack.close();
+
+        console.log("Leaving the channel...");
+        await client.leave();
+        console.log("Left the channel.");
+
+        // Clear video elements
+        document.getElementById("local-video").srcObject = null;
+        document.getElementById("remote-video").srcObject = null;
+
+        // Reset UI
+        document.getElementById("start-call").disabled = false;
+        document.getElementById("leave-call").disabled = true;
+    } catch (error) {
+        console.error("Error leaving the call:", error);
+    }
+};
+
+    </script>
 </body>
 </html>
