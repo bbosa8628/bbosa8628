@@ -6,6 +6,8 @@
     <title>Random Video Chat</title>
     <style>
         video { width: 50%; height: auto; }
+        #callDialog { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border: 1px solid #ccc; }
+        .dialogButtons { margin-top: 10px; }
     </style>
 </head>
 <body>
@@ -14,6 +16,17 @@
     <video id="remoteVideo" autoplay playsinline></video>
     <button id="startButton">Start Chat</button>
     <button id="endButton" disabled>End Chat</button>
+    <input type="text" id="userId" readonly placeholder="Your ID will appear here" />
+    <input type="text" id="callInput" placeholder="Enter friend's ID to call" />
+    <button id="callFriend">Call Friend</button>
+
+    <div id="callDialog">
+        <p>Incoming call from <span id="callerId"></span></p>
+        <div class="dialogButtons">
+            <button id="acceptCall">Accept</button>
+            <button id="rejectCall">Reject</button>
+        </div>
+    </div>
 
     <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-app.js"></script>
     <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-firestore.js"></script>
@@ -44,49 +57,62 @@
 
         let localStream;
         let remoteStream;
+        let localUserId = null;
 
         const localVideo = document.getElementById('localVideo');
         const remoteVideo = document.getElementById('remoteVideo');
         const startButton = document.getElementById('startButton');
         const endButton = document.getElementById('endButton');
+        const callFriend = document.getElementById('callFriend');
+        const userIdInput = document.getElementById('userId');
+        const callInput = document.getElementById('callInput');
+        const callDialog = document.getElementById('callDialog');
+        const callerId = document.getElementById('callerId');
+        const acceptCall = document.getElementById('acceptCall');
+        const rejectCall = document.getElementById('rejectCall');
 
         startButton.onclick = async () => {
             startButton.disabled = true;
             endButton.disabled = false;
             
-            // Access webcam
             localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
             localVideo.srcObject = localStream;
             localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-            // Look for a room or create one
-            const roomsRef = db.collection('rooms');
-            const availableRoom = await roomsRef.where("hasUser", "==", false).limit(1).get();
+            // Generate a unique ID for the user
+            localUserId = Math.random().toString(36).substr(2, 10);
+            userIdInput.value = localUserId;
 
-            if (availableRoom.empty) {
-                // Create a new room if none available
-                const roomRef = await roomsRef.add({
+            // Listen for incoming calls
+            db.collection('calls').where('to', '==', localUserId).onSnapshot(snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    if (change.type === 'added') {
+                        const call = change.doc.data();
+                        showCallDialog(call.from);
+                        change.doc.ref.delete(); // Clean up after showing the dialog
+                    }
+                });
+            });
+        };
+
+        callFriend.onclick = async () => {
+            const friendId = callInput.value;
+            if (friendId) {
+                const roomRef = await db.collection('rooms').add({
                     hasUser: true,
                     offerCandidates: [],
                     answerCandidates: []
                 });
-                createOffer(roomRef);
-            } else {
-                // Join the available room
-                const room = availableRoom.docs[0];
-                room.ref.update({ hasUser: true });
-                joinRoom(room);
+                createOffer(roomRef, friendId);
             }
         };
 
         endButton.onclick = async () => {
             endButton.disabled = true;
             startButton.disabled = false;
-            // Close streams and connection
             localStream.getTracks().forEach(track => track.stop());
-            remoteStream.getTracks().forEach(track => track.stop());
+            if (remoteStream) remoteStream.getTracks().forEach(track => track.stop());
             pc.close();
-            // Remove room from Firestore
             const roomId = localStorage.getItem('currentRoomId');
             if (roomId) {
                 await db.collection('rooms').doc(roomId).delete();
@@ -94,7 +120,19 @@
             }
         };
 
-        async function createOffer(roomRef) {
+        function showCallDialog(caller) {
+            callDialog.style.display = 'block';
+            callerId.textContent = caller;
+            acceptCall.onclick = () => {
+                callDialog.style.display = 'none';
+                joinRoom(caller);
+            };
+            rejectCall.onclick = () => {
+                callDialog.style.display = 'none';
+            };
+        }
+
+        async function createOffer(roomRef, friendId) {
             localStorage.setItem('currentRoomId', roomRef.id);
             const offerDescription = await pc.createOffer();
             await pc.setLocalDescription(offerDescription);
@@ -103,7 +141,9 @@
                 offer: {
                     type: offerDescription.type,
                     sdp: offerDescription.sdp
-                }
+                },
+                from: localUserId,
+                to: friendId
             };
             await roomRef.update(roomWithOffer);
 
@@ -119,53 +159,58 @@
                     });
                 }
             };
+
+            // Send call notification
+            await db.collection('calls').add({ from: localUserId, to: friendId });
         }
 
-        async function joinRoom(room) {
-            localStorage.setItem('currentRoomId', room.id);
-            const offerDescription = room.data().offer;
-            await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
+        async function joinRoom(friendId) {
+            const room = await db.collection('rooms').where('from', '==', friendId).where('to', '==', localUserId).limit(1).get();
+            if (!room.empty) {
+                const roomData = room.docs[0];
+                localStorage.setItem('currentRoomId', roomData.id);
+                const offerDescription = roomData.data().offer;
+                await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
 
-            const answerDescription = await pc.createAnswer();
-            await pc.setLocalDescription(answerDescription);
+                const answerDescription = await pc.createAnswer();
+                await pc.setLocalDescription(answerDescription);
 
-            const roomWithAnswer = {
-                answer: {
-                    type: answerDescription.type,
-                    sdp: answerDescription.sdp
-                }
-            };
-            await room.update(roomWithAnswer);
-
-            pc.onicecandidate = event => {
-                if (event.candidate) {
-                    room.update({
-                        answerCandidates: firebase.firestore.FieldValue.arrayUnion({
-                            type: 'candidate',
-                            label: event.candidate.sdpMLineIndex,
-                            id: event.candidate.sdpMid,
-                            candidate: event.candidate.candidate
-                        })
-                    });
-                }
-            };
-
-            // Listen for remote ICE candidates
-            room.ref.collection('offerCandidates').onSnapshot(snapshot => {
-                snapshot.docChanges().forEach(change => {
-                    if (change.type === 'added') {
-                        let data = change.doc.data();
-                        pc.addIceCandidate(new RTCIceCandidate(data));
+                const roomWithAnswer = {
+                    answer: {
+                        type: answerDescription.type,
+                        sdp: answerDescription.sdp
                     }
+                };
+                await roomData.ref.update(roomWithAnswer);
+
+                pc.onicecandidate = event => {
+                    if (event.candidate) {
+                        roomData.ref.update({
+                            answerCandidates: firebase.firestore.FieldValue.arrayUnion({
+                                type: 'candidate',
+                                label: event.candidate.sdpMLineIndex,
+                                id: event.candidate.sdpMid,
+                                candidate: event.candidate.candidate
+                            })
+                        });
+                    }
+                };
+
+                roomData.ref.collection('offerCandidates').onSnapshot(snapshot => {
+                    snapshot.docChanges().forEach(change => {
+                        if (change.type === 'added') {
+                            let data = change.doc.data();
+                            pc.addIceCandidate(new RTCIceCandidate(data));
+                        }
+                    });
                 });
-            });
+            }
         }
 
         pc.ontrack = event => {
             remoteStream = event.streams[0];
             remoteVideo.srcObject = remoteStream;
         };
-
     </script>
 </body>
 </html>
