@@ -6,7 +6,7 @@
     <title>Random Video Chat</title>
     <style>
         video { width: 50%; height: auto; }
-        #callDialog { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border: 1px solid #ccc; }
+        #callDialog, #pairStatus { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border: 1px solid #ccc; }
         .dialogButtons { margin-top: 10px; }
     </style>
 </head>
@@ -26,6 +26,10 @@
             <button id="acceptCall">Accept</button>
             <button id="rejectCall">Reject</button>
         </div>
+    </div>
+
+    <div id="pairStatus">
+        <p id="pairStatusText"></p>
     </div>
 
     <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-app.js"></script>
@@ -58,6 +62,7 @@
         let localStream;
         let remoteStream;
         let localUserId = null;
+        let currentRoomId = null;
 
         const localVideo = document.getElementById('localVideo');
         const remoteVideo = document.getElementById('remoteVideo');
@@ -70,6 +75,8 @@
         const callerId = document.getElementById('callerId');
         const acceptCall = document.getElementById('acceptCall');
         const rejectCall = document.getElementById('rejectCall');
+        const pairStatus = document.getElementById('pairStatus');
+        const pairStatusText = document.getElementById('pairStatusText');
 
         startButton.onclick = async () => {
             startButton.disabled = true;
@@ -101,8 +108,12 @@
                 const roomRef = await db.collection('rooms').add({
                     hasUser: true,
                     offerCandidates: [],
-                    answerCandidates: []
+                    answerCandidates: [],
+                    from: localUserId,
+                    to: friendId,
+                    isPaired: false
                 });
+                currentRoomId = roomRef.id;
                 createOffer(roomRef, friendId);
             }
         };
@@ -113,10 +124,9 @@
             localStream.getTracks().forEach(track => track.stop());
             if (remoteStream) remoteStream.getTracks().forEach(track => track.stop());
             pc.close();
-            const roomId = localStorage.getItem('currentRoomId');
-            if (roomId) {
-                await db.collection('rooms').doc(roomId).delete();
-                localStorage.removeItem('currentRoomId');
+            if (currentRoomId) {
+                await db.collection('rooms').doc(currentRoomId).delete();
+                currentRoomId = null;
             }
         };
 
@@ -132,8 +142,15 @@
             };
         }
 
+        function showPairStatus(status) {
+            pairStatusText.textContent = status;
+            pairStatus.style.display = 'block';
+            setTimeout(() => {
+                pairStatus.style.display = 'none';
+            }, 3000); // Hide after 3 seconds
+        }
+
         async function createOffer(roomRef, friendId) {
-            localStorage.setItem('currentRoomId', roomRef.id);
             const offerDescription = await pc.createOffer();
             await pc.setLocalDescription(offerDescription);
 
@@ -141,9 +158,7 @@
                 offer: {
                     type: offerDescription.type,
                     sdp: offerDescription.sdp
-                },
-                from: localUserId,
-                to: friendId
+                }
             };
             await roomRef.update(roomWithOffer);
 
@@ -162,13 +177,14 @@
 
             // Send call notification
             await db.collection('calls').add({ from: localUserId, to: friendId });
+            showPairStatus("Waiting for friend to accept...");
         }
 
         async function joinRoom(friendId) {
             const room = await db.collection('rooms').where('from', '==', friendId).where('to', '==', localUserId).limit(1).get();
             if (!room.empty) {
                 const roomData = room.docs[0];
-                localStorage.setItem('currentRoomId', roomData.id);
+                currentRoomId = roomData.id;
                 const offerDescription = roomData.data().offer;
                 await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
 
@@ -179,9 +195,13 @@
                     answer: {
                         type: answerDescription.type,
                         sdp: answerDescription.sdp
-                    }
+                    },
+                    isPaired: true
                 };
                 await roomData.ref.update(roomWithAnswer);
+
+                // Notify both users
+                showPairStatus("You are now paired!");
 
                 pc.onicecandidate = event => {
                     if (event.candidate) {
@@ -204,6 +224,8 @@
                         }
                     });
                 });
+            } else {
+                showPairStatus("Failed to pair up.");
             }
         }
 
