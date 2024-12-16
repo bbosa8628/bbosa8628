@@ -4,153 +4,167 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Random Video Chat</title>
-    <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.17.0.js"></script>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-        }
-        video {
-            width: 300px;
-            height: 200px;
-            margin: 10px;
-            border: 1px solid #ccc;
-            background: #000;
-        }
-        #controls {
-            margin-top: 20px;
-        }
-        button {
-            margin: 5px;
-            padding: 10px 20px;
-            font-size: 16px;
-        }
+        video { width: 50%; height: auto; }
     </style>
 </head>
 <body>
     <h1>Random Video Chat</h1>
-    <video id="local-video" autoplay muted></video>
-    <video id="remote-video" autoplay></video>
-    <div id="controls">
-        <button id="start-call">Start Call</button>
-        <button id="leave-call" disabled>Leave Call</button>
-    </div>
+    <video id="localVideo" autoplay muted playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <button id="startButton">Start Chat</button>
+    <button id="endButton" disabled>End Chat</button>
+
+    <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-firestore.js"></script>
     <script>
-        const APP_ID = "060dcbbfb2d4446886f5fa8310e6995c"; // Replace with your Agora App ID
-const CHANNEL_NAME = "bbosa8628"; // Channel name for random connections
-const TEMP_TOKEN = null; // Replace with a token if your project is secured
+        // Initialize Firebase
+        var firebaseConfig = {
+            apiKey: "AIzaSyCFMg0r23SD663cpLkLd0xteZaWC-D3UxU",
+            authDomain: "groupchat-2e3a5.firebaseapp.com",
+            databaseURL: "https://groupchat-2e3a5-default-rtdb.firebaseio.com",
+            projectId: "groupchat-2e3a5",
+            storageBucket: "groupchat-2e3a5.appspot.com",
+            messagingSenderId: "991803460047",
+            appId: "1:991803460047:web:51d3b785656708842faaba",
+            measurementId: "G-F4T57W4HB8"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
 
-let client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-let localTracks = {};
-let remoteTracks = {};
+        const servers = {
+            iceServers: [
+                {
+                    urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302']
+                }
+            ],
+        };
 
-// Start the call
-document.getElementById("start-call").onclick = async () => {
-    try {
-        console.log("Joining channel...");
-        const uid = await client.join(APP_ID, CHANNEL_NAME, TEMP_TOKEN, null);
-        console.log(`Joined channel as UID: ${uid}`);
+        const pc = new RTCPeerConnection(servers);
 
-        console.log("Creating local tracks...");
-        const [audioTrack, videoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
-        localTracks.audioTrack = audioTrack;
-        localTracks.videoTrack = videoTrack;
+        let localStream;
+        let remoteStream;
 
-        // Ensure video is being played
-        console.log("Playing local video...");
-        const localVideo = document.getElementById("local-video");
-        videoTrack.play(localVideo);
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const startButton = document.getElementById('startButton');
+        const endButton = document.getElementById('endButton');
 
-        // Check if the video track is available and playing
-        if (!videoTrack) {
-            console.error("Error: Video track is not available");
-        } else {
-            console.log("Local video is being played.");
-        }
+        startButton.onclick = async () => {
+            startButton.disabled = true;
+            endButton.disabled = false;
+            
+            // Access webcam
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = localStream;
+            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-        console.log("Publishing local tracks...");
-        await client.publish([audioTrack, videoTrack]);
-        console.log("Local tracks published.");
+            // Look for a room or create one
+            const roomsRef = db.collection('rooms');
+            const availableRoom = await roomsRef.where("hasUser", "==", false).limit(1).get();
 
-        // Update UI
-        document.getElementById("start-call").disabled = true;
-        document.getElementById("leave-call").disabled = false;
-
-    } catch (error) {
-        console.error("Error joining channel or initializing tracks:", error);
-    }
-};
-
-// Handle remote user-published event
-client.on("user-published", async (user, mediaType) => {
-    console.log(`User published: ${user.uid}, mediaType: ${mediaType}`);
-
-    try {
-        console.log(`Subscribing to user: ${user.uid}...`);
-        await client.subscribe(user, mediaType);
-        console.log(`Subscribed to user: ${user.uid}`);
-
-        if (mediaType === "video") {
-            // Ensure remote video track is being played
-            console.log(`Playing remote video for user: ${user.uid}`);
-            const remoteVideo = document.getElementById("remote-video");
-            remoteTracks[user.uid] = user.videoTrack;
-            user.videoTrack.play(remoteVideo);
-
-            // Check if the remote video track is available
-            if (!user.videoTrack) {
-                console.error("Error: Remote video track is not available");
+            if (availableRoom.empty) {
+                // Create a new room if none available
+                const roomRef = await roomsRef.add({
+                    hasUser: true,
+                    offerCandidates: [],
+                    answerCandidates: []
+                });
+                createOffer(roomRef);
             } else {
-                console.log("Remote video is being played.");
+                // Join the available room
+                const room = availableRoom.docs[0];
+                room.ref.update({ hasUser: true });
+                joinRoom(room);
             }
+        };
+
+        endButton.onclick = async () => {
+            endButton.disabled = true;
+            startButton.disabled = false;
+            // Close streams and connection
+            localStream.getTracks().forEach(track => track.stop());
+            remoteStream.getTracks().forEach(track => track.stop());
+            pc.close();
+            // Remove room from Firestore
+            const roomId = localStorage.getItem('currentRoomId');
+            if (roomId) {
+                await db.collection('rooms').doc(roomId).delete();
+                localStorage.removeItem('currentRoomId');
+            }
+        };
+
+        async function createOffer(roomRef) {
+            localStorage.setItem('currentRoomId', roomRef.id);
+            const offerDescription = await pc.createOffer();
+            await pc.setLocalDescription(offerDescription);
+
+            const roomWithOffer = {
+                offer: {
+                    type: offerDescription.type,
+                    sdp: offerDescription.sdp
+                }
+            };
+            await roomRef.update(roomWithOffer);
+
+            pc.onicecandidate = event => {
+                if (event.candidate) {
+                    roomRef.update({
+                        offerCandidates: firebase.firestore.FieldValue.arrayUnion({
+                            type: 'candidate',
+                            label: event.candidate.sdpMLineIndex,
+                            id: event.candidate.sdpMid,
+                            candidate: event.candidate.candidate
+                        })
+                    });
+                }
+            };
         }
 
-        if (mediaType === "audio") {
-            console.log(`Playing remote audio for user: ${user.uid}`);
-            remoteTracks[user.uid] = user.audioTrack;
-            user.audioTrack.play();
+        async function joinRoom(room) {
+            localStorage.setItem('currentRoomId', room.id);
+            const offerDescription = room.data().offer;
+            await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
+
+            const answerDescription = await pc.createAnswer();
+            await pc.setLocalDescription(answerDescription);
+
+            const roomWithAnswer = {
+                answer: {
+                    type: answerDescription.type,
+                    sdp: answerDescription.sdp
+                }
+            };
+            await room.update(roomWithAnswer);
+
+            pc.onicecandidate = event => {
+                if (event.candidate) {
+                    room.update({
+                        answerCandidates: firebase.firestore.FieldValue.arrayUnion({
+                            type: 'candidate',
+                            label: event.candidate.sdpMLineIndex,
+                            id: event.candidate.sdpMid,
+                            candidate: event.candidate.candidate
+                        })
+                    });
+                }
+            };
+
+            // Listen for remote ICE candidates
+            room.ref.collection('offerCandidates').onSnapshot(snapshot => {
+                snapshot.docChanges().forEach(change => {
+                    if (change.type === 'added') {
+                        let data = change.doc.data();
+                        pc.addIceCandidate(new RTCIceCandidate(data));
+                    }
+                });
+            });
         }
-    } catch (error) {
-        console.error("Error subscribing to user:", error);
-    }
-});
 
-// Handle user-unpublished event
-client.on("user-unpublished", (user) => {
-    console.log(`User unpublished: ${user.uid}`);
-    if (remoteTracks[user.uid]) {
-        remoteTracks[user.uid].stop();
-        delete remoteTracks[user.uid];
-    }
-});
-
-// Leave the call
-document.getElementById("leave-call").onclick = async () => {
-    try {
-        console.log("Stopping local tracks...");
-        if (localTracks.audioTrack) localTracks.audioTrack.close();
-        if (localTracks.videoTrack) localTracks.videoTrack.close();
-
-        console.log("Leaving the channel...");
-        await client.leave();
-        console.log("Left the channel.");
-
-        // Clear video elements
-        document.getElementById("local-video").srcObject = null;
-        document.getElementById("remote-video").srcObject = null;
-
-        // Reset UI
-        document.getElementById("start-call").disabled = false;
-        document.getElementById("leave-call").disabled = true;
-    } catch (error) {
-        console.error("Error leaving the call:", error);
-    }
-};
+        pc.ontrack = event => {
+            remoteStream = event.streams[0];
+            remoteVideo.srcObject = remoteStream;
+        };
 
     </script>
 </body>
