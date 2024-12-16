@@ -33,7 +33,7 @@
     </div>
 
     <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-database.js"></script>
     <script>
         // Initialize Firebase
         var firebaseConfig = {
@@ -47,7 +47,7 @@
           measurementId: "G-D9B4Q57DH2"
         };
         firebase.initializeApp(firebaseConfig);
-        const db = firebase.firestore();
+        const db = firebase.database();
 
         const servers = {
             iceServers: [
@@ -91,21 +91,17 @@
             userIdInput.value = localUserId;
 
             // Listen for incoming calls
-            db.collection('calls').where('to', '==', localUserId).onSnapshot(snapshot => {
-                snapshot.docChanges().forEach(change => {
-                    if (change.type === 'added') {
-                        const call = change.doc.data();
-                        showCallDialog(call.from);
-                        change.doc.ref.delete(); // Clean up after showing the dialog
-                    }
-                });
+            db.ref('calls').orderByChild('to').equalTo(localUserId).on('child_added', (snapshot) => {
+                const call = snapshot.val();
+                showCallDialog(call.from);
+                snapshot.ref.remove(); // Clean up after showing the dialog
             });
         };
 
         callFriend.onclick = async () => {
             const friendId = callInput.value;
             if (friendId) {
-                const roomRef = await db.collection('rooms').add({
+                const roomRef = db.ref('rooms').push({
                     hasUser: true,
                     offerCandidates: [],
                     answerCandidates: [],
@@ -113,7 +109,7 @@
                     to: friendId,
                     isPaired: false
                 });
-                currentRoomId = roomRef.id;
+                currentRoomId = roomRef.key;
                 createOffer(roomRef, friendId);
             }
         };
@@ -125,7 +121,7 @@
             if (remoteStream) remoteStream.getTracks().forEach(track => track.stop());
             pc.close();
             if (currentRoomId) {
-                await db.collection('rooms').doc(currentRoomId).delete();
+                await db.ref('rooms/' + currentRoomId).remove();
                 currentRoomId = null;
             }
         };
@@ -160,73 +156,67 @@
                     sdp: offerDescription.sdp
                 }
             };
-            await roomRef.update(roomWithOffer);
+            roomRef.update(roomWithOffer);
 
             pc.onicecandidate = event => {
                 if (event.candidate) {
-                    roomRef.update({
-                        offerCandidates: firebase.firestore.FieldValue.arrayUnion({
-                            type: 'candidate',
-                            label: event.candidate.sdpMLineIndex,
-                            id: event.candidate.sdpMid,
-                            candidate: event.candidate.candidate
-                        })
+                    roomRef.child('offerCandidates').push({
+                        type: 'candidate',
+                        label: event.candidate.sdpMLineIndex,
+                        id: event.candidate.sdpMid,
+                        candidate: event.candidate.candidate
                     });
                 }
             };
 
             // Send call notification
-            await db.collection('calls').add({ from: localUserId, to: friendId });
+            db.ref('calls').push({ from: localUserId, to: friendId });
             showPairStatus("Waiting for friend to accept...");
         }
 
         async function joinRoom(friendId) {
-            const room = await db.collection('rooms').where('from', '==', friendId).where('to', '==', localUserId).limit(1).get();
-            if (!room.empty) {
-                const roomData = room.docs[0];
-                currentRoomId = roomData.id;
-                const offerDescription = roomData.data().offer;
-                await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
+            db.ref('rooms').orderByChild('from').equalTo(friendId).orderByChild('to').equalTo(localUserId).once('value', (snapshot) => {
+                if (snapshot.exists()) {
+                    const room = snapshot.val();
+                    for (const [key, value] of Object.entries(room)) {
+                        currentRoomId = key;
+                        const offerDescription = value.offer;
+                        pc.setRemoteDescription(new RTCSessionDescription(offerDescription))
+                            .then(() => pc.createAnswer())
+                            .then(answerDescription => {
+                                pc.setLocalDescription(answerDescription);
+                                const roomWithAnswer = {
+                                    answer: {
+                                        type: answerDescription.type,
+                                        sdp: answerDescription.sdp
+                                    },
+                                    isPaired: true
+                                };
+                                db.ref('rooms/' + key).update(roomWithAnswer);
+                                showPairStatus("You are now paired!");
+                                
+                                pc.onicecandidate = event => {
+                                    if (event.candidate) {
+                                        db.ref('rooms/' + key + '/answerCandidates').push({
+                                            type: 'candidate',
+                                            label: event.candidate.sdpMLineIndex,
+                                            id: event.candidate.sdpMid,
+                                            candidate: event.candidate.candidate
+                                        });
+                                    }
+                                };
 
-                const answerDescription = await pc.createAnswer();
-                await pc.setLocalDescription(answerDescription);
-
-                const roomWithAnswer = {
-                    answer: {
-                        type: answerDescription.type,
-                        sdp: answerDescription.sdp
-                    },
-                    isPaired: true
-                };
-                await roomData.ref.update(roomWithAnswer);
-
-                // Notify both users
-                showPairStatus("You are now paired!");
-
-                pc.onicecandidate = event => {
-                    if (event.candidate) {
-                        roomData.ref.update({
-                            answerCandidates: firebase.firestore.FieldValue.arrayUnion({
-                                type: 'candidate',
-                                label: event.candidate.sdpMLineIndex,
-                                id: event.candidate.sdpMid,
-                                candidate: event.candidate.candidate
-                            })
-                        });
+                                db.ref('rooms/' + key + '/offerCandidates').on('child_added', (dataSnapshot) => {
+                                    const candidate = dataSnapshot.val();
+                                    pc.addIceCandidate(new RTCIceCandidate(candidate));
+                                });
+                            });
+                        break; // We only deal with the first match
                     }
-                };
-
-                roomData.ref.collection('offerCandidates').onSnapshot(snapshot => {
-                    snapshot.docChanges().forEach(change => {
-                        if (change.type === 'added') {
-                            let data = change.doc.data();
-                            pc.addIceCandidate(new RTCIceCandidate(data));
-                        }
-                    });
-                });
-            } else {
-                showPairStatus("Failed to pair up.");
-            }
+                } else {
+                    showPairStatus("Failed to pair up.");
+                }
+            });
         }
 
         pc.ontrack = event => {
