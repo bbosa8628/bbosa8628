@@ -27,7 +27,7 @@
 
         /* Header */
         h1 {
-            color: #ff0000;  /* Red color for the header */
+            color: #ff0000;
             margin-bottom: 20px;
         }
 
@@ -42,10 +42,10 @@
 
         /* Video container */
         video {
-            width: 45%;  /* Video width, ensuring both videos fit side by side */
-            max-width: 480px;  /* Maximum video width */
+            width: 45%;
+            max-width: 480px;
             height: auto;
-            border: 2px solid #b5acac3a;  /* Border around the video */
+            border: 2px solid #b5acac3a;
             margin: 10px;
         }
 
@@ -60,13 +60,13 @@
 
         /* Start Call Button (Green) */
         #startCall {
-            background-color: #079328;  /* Green color for Start Call */
+            background-color: #079328;
             color: white;
         }
 
         /* Stop Call Button (Red) */
         #stopCall {
-            background-color: #dc3545;  /* Red color for Stop Call */
+            background-color: #dc3545;
             color: white;
             display: none;  /* Initially hide the Stop Call button */
         }
@@ -80,9 +80,9 @@
 
             /* Adjust video size on mobile for better fit */
             video {
-                width: 80%;  /* Videos take up more width on mobile */
-                max-width: 100%;  /* Ensure videos fit within screen */
-                margin: 10px auto;  /* Center videos with margin */
+                width: 80%;
+                max-width: 100%;
+                margin: 10px auto;
             }
 
             /* Adjust button sizes for mobile */
@@ -91,7 +91,6 @@
                 padding: 12px;
             }
         }
-
     </style>
 </head>
 <body>
@@ -101,7 +100,7 @@
         <video id="remoteVideo" autoplay playsinline></video>
         <br>
         <button id="startCall">Start Call</button>
-        <button id="stopCall">Stop Call</button>  <!-- Stop Call button initially hidden -->
+        <button id="stopCall">Stop Call</button>
     </div>
 
     <script>
@@ -112,7 +111,7 @@
 
         let localStream;
         let peerConnection;
-        const ws = new WebSocket('wss://videocall-gyvr.onrender.com');  // Use your Render server URL with 'wss' (WebSocket Secure)
+        const ws = new WebSocket('ws://<YOUR_SERVER_IP>:9000/ws'); // Update with your server IP and WebSocket path
         const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }; // STUN server config
 
         async function initLocalStream() {
@@ -160,7 +159,6 @@
             } 
             else if (message.type === 'end') {
                 console.log(message.message);
-                // Optionally add UI changes for when the call ends.
                 stopCallButton.style.display = 'none';
                 startCallButton.style.display = 'block';
             }
@@ -176,7 +174,6 @@
             console.log("Sending Offer:", offer.sdp);
             ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
 
-            // Show stop call button when the call starts
             startCallButton.style.display = 'none';
             stopCallButton.style.display = 'block';
         });
@@ -184,14 +181,10 @@
         // Stop Call: Close the connection and send a stop message to the server
         stopCallButton.addEventListener('click', async () => {
             if (peerConnection) {
-                // Close the peer connection for this user
                 peerConnection.close();
                 peerConnection = null;
-
-                // Send a message to the server indicating the user wants to stop the call
                 ws.send(JSON.stringify({ type: 'stop', message: 'Stop the call for this user' }));
 
-                // Hide the stop call button after the user clicks it
                 stopCallButton.style.display = 'none';
                 startCallButton.style.display = 'block';
             }
