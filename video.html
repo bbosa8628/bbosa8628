@@ -1,192 +1,201 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Random Video Chat</title>
+    <title>P2P Video Call with WebRTC</title>
     <style>
-        video { width: 50%; height: auto; }
-        #callDialog, #pairStatus { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border: 1px solid #ccc; }
-        .dialogButtons { margin-top: 10px; }
+        /* Global Reset */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        /* Body */
+        body {
+            font-family: Arial, sans-serif;
+            background-color: black;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            flex-direction: column;
+            text-align: center;
+        }
+
+        /* Header */
+        h1 {
+            color: #ff0000;  /* Red color for the header */
+            margin-bottom: 20px;
+        }
+
+        /* Main container for videos and buttons */
+        .container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 20px;
+            width: 100%;
+        }
+
+        /* Video container */
+        video {
+            width: 45%;  /* Video width, ensuring both videos fit side by side */
+            max-width: 480px;  /* Maximum video width */
+            height: auto;
+            border: 2px solid #b5acac3a;  /* Border around the video */
+            margin: 10px;
+        }
+
+        /* Buttons */
+        button {
+            padding: 15px 25px;
+            font-size: 16px;
+            border: none;
+            cursor: pointer;
+            margin: 10px;
+        }
+
+        /* Start Call Button (Green) */
+        #startCall {
+            background-color: #079328;  /* Green color for Start Call */
+            color: white;
+        }
+
+        /* Stop Call Button (Red) */
+        #stopCall {
+            background-color: #dc3545;  /* Red color for Stop Call */
+            color: white;
+            display: none;  /* Initially hide the Stop Call button */
+        }
+
+        /* Media Query for mobile responsiveness */
+        @media (max-width: 768px) {
+            /* Stack videos vertically on smaller screens */
+            .container {
+                flex-direction: column;
+            }
+
+            /* Adjust video size on mobile for better fit */
+            video {
+                width: 80%;  /* Videos take up more width on mobile */
+                max-width: 100%;  /* Ensure videos fit within screen */
+                margin: 10px auto;  /* Center videos with margin */
+            }
+
+            /* Adjust button sizes for mobile */
+            button {
+                width: 80%;
+                padding: 12px;
+            }
+        }
+
     </style>
 </head>
 <body>
-    <h1>Random Video Chat</h1>
-    <video id="localVideo" autoplay muted playsinline></video>
-    <video id="remoteVideo" autoplay playsinline></video>
-    <button id="startButton">Start Chat</button>
-    <button id="endButton" disabled>End Chat</button>
-    <input type="text" id="userId" readonly placeholder="Your ID will appear here" />
-    <input type="text" id="callInput" placeholder="Enter friend's ID to call" />
-    <button id="callFriend">Call Friend</button>
-
-    <div id="callDialog">
-        <p>Incoming call from <span id="callerId"></span></p>
-        <div class="dialogButtons">
-            <button id="acceptCall">Accept</button>
-            <button id="rejectCall">Reject</button>
-        </div>
+    <h1>bbosa8628 Random Stranger Video Call</h1>
+    <div class="container">
+        <video id="localVideo" autoplay muted playsinline></video>
+        <video id="remoteVideo" autoplay playsinline></video>
+        <br>
+        <button id="startCall">Start Call</button>
+        <button id="stopCall">Stop Call</button>  <!-- Stop Call button initially hidden -->
     </div>
 
-    <div id="pairStatus">
-        <p id="pairStatusText"></p>
-    </div>
-
-    <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-app.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/8.2.9/firebase-firestore.js"></script>
     <script>
-        // Initialize Firebase
-        var firebaseConfig = {
-          apiKey: "YOUR_API_KEY",
-          authDomain: "YOUR_AUTH_DOMAIN",
-          databaseURL: "YOUR_DATABASE_URL",
-          projectId: "YOUR_PROJECT_ID",
-          storageBucket: "YOUR_STORAGE_BUCKET",
-          messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-          appId: "YOUR_APP_ID",
-        };
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.firestore();
-
-        const servers = {
-            iceServers: [
-                {
-                    urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302']
-                }
-            ],
-        };
-
-        const pc = new RTCPeerConnection(servers);
-
-        let localStream;
-        let remoteStream;
-        let localUserId = null;
-        let currentRoomId = null;
-
         const localVideo = document.getElementById('localVideo');
         const remoteVideo = document.getElementById('remoteVideo');
-        const startButton = document.getElementById('startButton');
-        const endButton = document.getElementById('endButton');
-        const callFriend = document.getElementById('callFriend');
-        const userIdInput = document.getElementById('userId');
-        const callInput = document.getElementById('callInput');
-        const callDialog = document.getElementById('callDialog');
-        const callerId = document.getElementById('callerId');
-        const acceptCall = document.getElementById('acceptCall');
-        const rejectCall = document.getElementById('rejectCall');
-        const pairStatus = document.getElementById('pairStatus');
-        const pairStatusText = document.getElementById('pairStatusText');
+        const startCallButton = document.getElementById('startCall');
+        const stopCallButton = document.getElementById('stopCall');
 
-        startButton.onclick = async () => {
-            startButton.disabled = true;
-            endButton.disabled = false;
-            
+        let localStream;
+        let peerConnection;
+        const ws = new WebSocket('wss://videocall-gyvr.onrender.com');  // Use your Render server URL with 'wss' (WebSocket Secure)
+        const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }; // STUN server config
+
+        async function initLocalStream() {
             localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
             localVideo.srcObject = localStream;
-            localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
-            localUserId = Math.random().toString(36).substr(2, 10);
-            userIdInput.value = localUserId;
-
-            db.collection('calls').where('to', '==', localUserId).onSnapshot(snapshot => {
-                snapshot.docChanges().forEach(change => {
-                    if (change.type === 'added') {
-                        const call = change.doc.data();
-                        showCallDialog(call.from);
-                        change.doc.ref.delete();
-                    }
-                });
-            });
-        };
-
-        callFriend.onclick = async () => {
-            const friendId = callInput.value;
-            if (friendId) {
-                const roomRef = await db.collection('rooms').add({
-                    offerCandidates: [],
-                    answerCandidates: [],
-                    from: localUserId,
-                    to: friendId
-                });
-                currentRoomId = roomRef.id;
-                createOffer(roomRef);
-            }
-        };
-
-        endButton.onclick = async () => {
-            endButton.disabled = true;
-            startButton.disabled = false;
-            localStream.getTracks().forEach(track => track.stop());
-            if (remoteStream) remoteStream.getTracks().forEach(track => track.stop());
-            pc.close();
-            if (currentRoomId) {
-                await db.collection('rooms').doc(currentRoomId).delete();
-                currentRoomId = null;
-            }
-        };
-
-        function showCallDialog(caller) {
-            callDialog.style.display = 'block';
-            callerId.textContent = caller;
-            acceptCall.onclick = () => {
-                callDialog.style.display = 'none';
-                joinRoom(caller);
-            };
-            rejectCall.onclick = () => {
-                callDialog.style.display = 'none';
-            };
         }
 
-        async function createOffer(roomRef) {
-            const offerDescription = await pc.createOffer();
-            await pc.setLocalDescription(offerDescription);
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(config);
 
-            await roomRef.update({ offer: { type: offerDescription.type, sdp: offerDescription.sdp } });
+            // Add local stream tracks to peer connection
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
-            pc.onicecandidate = event => {
+            // Handle remote stream
+            peerConnection.ontrack = event => {
+                remoteVideo.srcObject = event.streams[0];
+            };
+
+            // Handle ICE candidates
+            peerConnection.onicecandidate = event => {
                 if (event.candidate) {
-                    roomRef.update({
-                        offerCandidates: firebase.firestore.FieldValue.arrayUnion(event.candidate.toJSON())
-                    });
+                    ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate }));
                 }
             };
         }
 
-        async function joinRoom(callerId) {
-            const roomSnapshot = await db.collection('rooms').where('from', '==', callerId).where('to', '==', localUserId).limit(1).get();
-            if (!roomSnapshot.empty) {
-                const roomRef = roomSnapshot.docs[0];
-                const roomData = roomRef.data();
+        // Handle WebSocket messages (Signaling)
+        ws.onmessage = async (event) => {
+            const message = JSON.parse(event.data);
 
-                await pc.setRemoteDescription(new RTCSessionDescription(roomData.offer));
-                const answerDescription = await pc.createAnswer();
-                await pc.setLocalDescription(answerDescription);
-
-                await roomRef.ref.update({ answer: { type: answerDescription.type, sdp: answerDescription.sdp } });
-
-                pc.onicecandidate = event => {
-                    if (event.candidate) {
-                        roomRef.ref.update({
-                            answerCandidates: firebase.firestore.FieldValue.arrayUnion(event.candidate.toJSON())
-                        });
-                    }
-                };
-
-                roomRef.ref.onSnapshot(async snapshot => {
-                    const updatedRoom = snapshot.data();
-                    if (updatedRoom && updatedRoom.answerCandidates) {
-                        updatedRoom.answerCandidates.forEach(candidate => {
-                            pc.addIceCandidate(new RTCIceCandidate(candidate));
-                        });
-                    }
-                });
+            if (message.type === 'offer') {
+                console.log("Received Offer:", message.sdp);
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+            } 
+            else if (message.type === 'answer') {
+                console.log("Received Answer:", message.sdp);
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message));
+            } 
+            else if (message.type === 'candidate') {
+                console.log("Received ICE Candidate:", message.candidate);
+                await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+            } 
+            else if (message.type === 'end') {
+                console.log(message.message);
+                // Optionally add UI changes for when the call ends.
+                stopCallButton.style.display = 'none';
+                startCallButton.style.display = 'block';
             }
-        }
-
-        pc.ontrack = event => {
-            remoteStream = event.streams[0];
-            remoteVideo.srcObject = remoteStream;
         };
+
+        // Start Call: Create an offer and send it
+        startCallButton.addEventListener('click', async () => {
+            await initLocalStream();
+            createPeerConnection();
+
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            console.log("Sending Offer:", offer.sdp);
+            ws.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+
+            // Show stop call button when the call starts
+            startCallButton.style.display = 'none';
+            stopCallButton.style.display = 'block';
+        });
+
+        // Stop Call: Close the connection and send a stop message to the server
+        stopCallButton.addEventListener('click', async () => {
+            if (peerConnection) {
+                // Close the peer connection for this user
+                peerConnection.close();
+                peerConnection = null;
+
+                // Send a message to the server indicating the user wants to stop the call
+                ws.send(JSON.stringify({ type: 'stop', message: 'Stop the call for this user' }));
+
+                // Hide the stop call button after the user clicks it
+                stopCallButton.style.display = 'none';
+                startCallButton.style.display = 'block';
+            }
+        });
     </script>
 </body>
 </html>
